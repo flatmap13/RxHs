@@ -18,7 +18,7 @@ instance Functor Observable where
   fmap f = lift (coMap f)
     where
       coMap :: (a -> b) -> Observer b -> Observer a
-      coMap f ob = Observer (\a -> onNext ob (f a)) 
+      coMap f ob = Observer (onNext ob . f) 
                             (onError ob) 
                             (onCompleted ob)
 
@@ -26,8 +26,8 @@ instance Applicative Observable where
   pure a = Observable (\obr -> onNext obr a >> onCompleted obr)
   f <*> a = rxCombineLatestWith ($) f a
 
-lift :: (Observer b -> Observer a) -> (Observable a -> Observable b)
-lift f = \obsA -> Observable (\obrB -> subscribe obsA (f obrB))
+lift :: (Observer b -> Observer a) -> Observable a -> Observable b
+lift f oa = Observable (subscribe oa . f)
 
 rxCombineLatestWith :: (a -> b -> c) -> Observable a -> Observable b -> Observable c
 rxCombineLatestWith f oa ob = uncurry f <$> rxCombineLatest oa ob
@@ -36,22 +36,25 @@ rxCombineLatest :: Observable a -> Observable b -> Observable (a,b)
 rxCombineLatest oa ob = Observable onSubscribe
   where
     onSubscribe obr = do 
-        varA <- newIORef Nothing
-        varB <- newIORef Nothing
-        subscribe oa $ Observer (onNextA varA varB obr) (onError obr) (onCompleted obr)
-        subscribe ob $ Observer (onNextB varA varB obr) (onError obr) (onCompleted obr)
-    onNextA varA varB obr a = do writeIORef varA (Just a)
-                                 Just b <- readIORef varB
-                                 onNext obr (a, b)
-    onNextB varA varB obr b = do writeIORef varB (Just b)
-                                 Just a <- readIORef varA
-                                 onNext obr (a, b)
+        refA <- newIORef Nothing
+        refB <- newIORef Nothing
+        doneA <- newIORef False
+        doneB <- newIORef False
+        subscribe oa $ Observer (onNextA refA refB obr) (onError obr) (handleOnCompleted doneB doneA obr)
+        subscribe ob $ Observer (onNextB refA refB obr) (onError obr) (handleOnCompleted doneA doneB obr)
+    handleOnCompleted readRef writeRef obr = do done <- readIORef readRef 
+                                                if done then onCompleted obr else writeIORef writeRef True
+    combine readRef writeRef val = writeIORef writeRef (Just val) >> readIORef readRef
+    onNextA refA refB obr a = do maybeB <- combine refB refA a
+                                 when (isJust maybeB) $ onNext obr (a, fromJust maybeB)
+    onNextB refA refB obr b = do maybeA <- combine refA refB b
+                                 when (isJust maybeA) $ onNext obr (fromJust maybeA, b)
 
 rxFilter :: (a -> Bool) -> Observable a -> Observable a
 rxFilter p = lift (coFilter p)
   where
     coFilter :: (a -> Bool) -> Observer a -> Observer a  
-    coFilter p oa = Observer (\a -> if p a then onNext oa a else return ()) 
+    coFilter p oa = Observer (\a -> when (p a) $ onNext oa a) 
                              (onError oa) 
                              (onCompleted oa)
 
@@ -61,10 +64,14 @@ stream = Observable (\observer -> do onNext observer 1
                                      onNext observer 3
                                      onCompleted observer)
 
+printObserver :: Show a => String -> Observer a
+printObserver doneMsg = Observer print print (print doneMsg)
+
 main :: IO ()
 main = do putStrLn "hello friend"
-          subscribe stream (Observer print print (print "done 1"))
-          subscribe (fmap (*1337) stream) (Observer print print (print "done 2"))
-          subscribe (rxFilter (> 1) stream) (Observer print print (print "done 3"))
+          subscribe stream $ printObserver "done 1"
+          subscribe (fmap (*1337) stream) $ printObserver "done 2"
+          subscribe (rxFilter (> 1) stream) $ printObserver "done 3"
+          subscribe (pure (\x -> "Transformed " ++ show x) <*> stream) $ printObserver "done 4"
           return ()
 
