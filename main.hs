@@ -54,8 +54,15 @@ unsubscribe s = do subs <- readIORef s
 isUnsubscribed :: Subscription -> IO Bool
 isUnsubscribed s = isNothing <$> readIORef s
 
+-- review this code!
+-- perhaps just write a (++) for Subscription?
+mergeSubscription :: Observer a -> Subscription -> IO ()
+mergeSubscription o s = do subs <- readIORef s
+                           forM_ subs $ mapM_ (addSubscription o) 
+
 -------------------- OPERATORS --------------------
 
+-- does the subscription get properly propagated here?
 lift :: (Observer b -> Observer a) -> Observable a -> Observable b
 lift f oa = Observable (onSubscribe oa . f)
 
@@ -71,8 +78,10 @@ rxCombineLatest oa ob = Observable (\obr -> do refA <- newIORef Nothing
                                                refB <- newIORef Nothing
                                                doneA <- newIORef False
                                                doneB <- newIORef False
-                                               onSubscribe oa $ createObserver (onNextA refA refB obr) (onError obr) (handleOnCompleted doneB doneA obr)
-                                               onSubscribe ob $ createObserver (onNextB refA refB obr) (onError obr) (handleOnCompleted doneA doneB obr))
+                                               sa <- subscribe oa $ createObserver (onNextA refA refB obr) (onError obr) (handleOnCompleted doneB doneA obr)
+                                               mergeSubscription obr sa
+                                               sb <- subscribe ob $ createObserver (onNextB refA refB obr) (onError obr) (handleOnCompleted doneA doneB obr)
+                                               mergeSubscription obr sb)
   where
     handleOnCompleted readRef writeRef obr = do done <- readIORef readRef 
                                                 if done then onCompleted obr else writeIORef writeRef True
