@@ -68,7 +68,13 @@ lift f oa = Observable (onSubscribe oa . f)
 
 -- TODO: `onCompleted obr` is never called now
 rxMerge :: Observable (Observable a) -> Observable a
-rxMerge oas = Observable (\obr -> onSubscribe oas $ createObserver (\oa -> onSubscribe oa $ createObserver (onNext obr) (onError obr) (return ())) (onError obr) (return ()))
+rxMerge oas = Observable (\obr ->
+        let onnext oa = do innerSub <- subscribe oa $ createObserver (onNext obr) (onError obr) (return ())
+                           mergeSubscription obr innerSub
+            onerror = onError obr
+            oncompleted = return ()
+        in do outerSub <- subscribe oas $ createObserver onnext onerror oncompleted
+              mergeSubscription obr outerSub)
 
 rxCombineLatestWith :: (a -> b -> c) -> Observable a -> Observable b -> Observable c
 rxCombineLatestWith f oa ob = uncurry f <$> rxCombineLatest oa ob
